@@ -1,0 +1,240 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+STAT 1223 Project Statistical Analysis
+
+Packages
+
+```{r}
+library(tidyverse)
+library(zoo)
+library(lmtest)
+```
+
+Load Dataset
+
+```{r}
+Treasury <- read.csv("Merged_Data.csv", sep=",", header = TRUE)
+```
+
+Clean Data
+
+```{r}
+  # Convert date
+Treasury$date <- as.Date(Treasury$Date)
+
+str(Treasury)
+
+  # Create original dataset without unnecessary Date columns, ready to use to model
+Treasury_original <- Treasury %>% select(-Date, -date)
+
+  # COVID dummy
+Treasury_original$covid <- ifelse(as.Date(Treasury$date) >= as.Date("2020-03-01") &
+  as.Date(Treasury$date) <= as.Date("2021-06-01"), 1, 0)
+
+  # SP500 change (first-difference)
+Treasury_original$SP500_diff <- c(NA, diff(Treasury$SP500))
+
+ # Lagged variable (inflation)
+Treasury_original$inflation_lag2 <- dplyr::lag(Treasury_original$Inflation_Rate, 2)
+```
+
+Drop NA
+
+```{r}
+treasury_na <- Treasury_original %>% drop_na(inflation_lag2, SP500_diff)
+```
+
+5-number summary + mean + histogram
+
+```{r}
+summary(treasury_na$US_10Y)
+
+mean(treasury_na$US_10Y, na.rm = TRUE)
+sd(treasury_na$US_10Y, na.rm = TRUE)
+
+png("us10y_histogram2.png", width = 800, height = 600)
+hist(Treasury$US_10Y,
+     main = "Histogram of US10Y",
+     xlab = "US10Y",
+     col = "skyblue")
+dev.off()
+```
+
+```{r}
+summary(treasury_na %>% select(FEDFUNDS_RATE, UNRATE, GOLD, USD, CN10Y, inflation_lag2, SP500_diff))
+
+sapply(treasury_na %>% select(FEDFUNDS_RATE, UNRATE, GOLD, USD, CN10Y, inflation_lag2, SP500_diff),
+       sd, na.rm = TRUE)
+```
+
+PLOTS: Check for linearity
+
+```{r}
+library(ggplot2)
+```
+
+```{r}
+Treasury_long1 <- treasury_na %>%
+  pivot_longer(cols = -c(US_10Y), names_to = "Predictor", values_to = "Value")
+```
+
+```{r}
+predictor_names1 <- unique(Treasury_long1$Predictor)
+```
+
+```{r}
+for (var in predictor_names1) {
+  Treasury_plot_data <- Treasury_long1 %>%
+    filter(Predictor == var)
+   scale_factor <- max(Treasury_plot_data$Value, na.rm = TRUE) / max(Treasury$US_10Y, na.rm = TRUE)
+  
+  p <- ggplot(Treasury_plot_data, aes(x = date, y = Value)) +
+    geom_line(aes(y = Value), color = "red", size = 1) +
+    
+    # Right y-axis: US_10Y time series (rescaled)
+    geom_line(aes(y = US_10Y * scale_factor), color = "blue", size = 1) +
+    labs(title = paste("Time-Based Relationship: US_10Y vs", var),
+         x = "Date",
+         y = var) +
+      
+    scale_y_continuous(
+      sec.axis = sec_axis(~ . / scale_factor, name = "US_10Y")  # Convert back to original US_10Y scale
+    ) +
+    
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, size = 16),
+          axis.title = element_text(size = 14),
+          axis.text = element_text(size = 12))
+
+    print(p)  # Print each plot separately
+}
+```
+```{r}
+for (var in predictor_names1) {
+  
+  p <- ggplot(Treasury_long1 %>% filter(Predictor == var), aes(x = Value, y = US_10Y)) +
+    geom_point(alpha = 0.5) +  # Scatter points
+    geom_smooth(method = "lm", color = "red", se = TRUE) +  # Linear regression line
+    geom_smooth(method = "loess", color = "blue", se = FALSE) +  # LOESS curve (for comparison)
+    labs(title = paste("Linearity Check: US_10Y vs", var),
+         x = var,
+         y = "US_10Y") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, size = 16),
+          axis.title = element_text(size = 14),
+          axis.text = element_text(size = 12))
+
+  print(p)
+ 
+ggsave(filename = paste0("scatterplot_US10Y_vs_", var, ".png"),
+       plot = p,
+       width = 6,
+       height = 4,
+       dpi = 300)
+}
+```
+
+Box Plot
+
+```{r}
+p1 <- ggplot(treasury_na, aes(x = factor(covid),
+                               y = US_10Y,
+                               fill = factor(covid))) +
+  geom_boxplot(outlier.color = "darkred", outlier.shape = 16, alpha = 0.7) +
+  scale_x_discrete(labels = c("0" = "Non-COVID", "1" = "COVID")) +
+  labs(title = "Figure 8. US10Y Yields During and Outside COVID Periods",
+       x = "Period",
+       y = "US 10-Year Treasury Yield (%)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(p1)
+
+ggsave("us10y_covid_boxplot.png", plot = p1, width = 6, height = 4, dpi = 300)
+
+```
+
+Collinearity check
+
+```{r}
+# Correlation Matrix
+cor(Treasury_original %>% select(US_10Y, FEDFUNDS_RATE,GOLD, Inflation_Rate, SP500, UNRATE, USD))
+```
+
+```{r}
+cor_matrix1 <- cor(treasury_na %>% select(US_10Y, FEDFUNDS_RATE,GOLD, inflation_lag2, SP500_diff, UNRATE, USD))
+write.csv(cor_matrix1, "correlation_matrix.csv")
+
+cor_matrix2 <-cor(treasury_na %>% select(US_10Y, FEDFUNDS_RATE,CN10Y, GOLD, inflation_lag2, SP500_diff, UNRATE, USD))
+write.csv(cor_matrix2, "correlation_matrix2.csv")
+```
+
+Collinearity check after dropping problematic variables
+
+```{r}
+cor_data <- treasury_na %>% select(US_10Y, FEDFUNDS_RATE, GOLD, SP500_diff, USD, UNRATE, inflation_lag2)
+
+cor(cor_data)
+```
+
+Run initial regression
+
+```{r}
+model <- lm(US_10Y ~ FEDFUNDS_RATE + USD + GOLD + UNRATE + SP500_diff + inflation_lag2 + covid, data = treasury_na)
+summary(model)
+```
+
+VIF Check
+
+```{r}
+require(regclass)
+VIF(model)
+```
+
+Durbin-Watson Test for autocorrelation
+
+```{r}
+dwtest(model)
+```
+Fix Autocorrelation
+
+```{r}
+library(sandwich)
+```
+
+```{r}
+coeftest(model, vcov = NeweyWest(model))
+```
+
+Consider adding interaction term on Unemployment rate
+
+```{r}
+model1 <- lm(US_10Y ~ FEDFUNDS_RATE + USD + GOLD + UNRATE * covid + SP500_diff + inflation_lag2, data = treasury_na)
+summary(model1)
+```
+
+```{r}
+coeftest(model1, vcov = NeweyWest(model1))
+```
+
+```{r}
+dwtest(model1)
+```
+```{r}
+plot(model1, which = 1)
+
+png("residuals_vs_fitted.png", width = 800, height = 600)
+plot(model1, which = 1)
+dev.off()
+```
+```{r}
+library(apaTables)
+
+apa.reg.table(model1, filename = "regression_final_table.doc")
+
+```
+
